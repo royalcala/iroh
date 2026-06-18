@@ -4,11 +4,11 @@ Lo que aprendimos implementando notificaciones P2P vía `endpoint.connect()` + `
 
 ## Bugs que tuvimos (y cómo evitarlos)
 
-### 1. Un Router, muchos handlers → el último es invisible
+### 1. Un Router, 4+ handlers → los últimos son ignorados ⚠️ BUG CONFIRMADO
 
-**Síntoma:** `connect()` funciona pero el handler nunca recibe la conexión.
+**Síntoma:** `connect()` funciona pero el handler nunca recibe la conexión. Con timeout, `connect()` se cuelga (deadline elapsed).
 
-**Causa:** Registrar 4+ protocol handlers en el mismo `Router::builder` hace que iroh ignore los últimos. Probablemente un límite interno de `accept()` loop.
+**Causa:** Registrar 4+ protocol handlers en el mismo `Router::builder` hace que iroh ignore los últimos. Confirmado con test `test_invite_in_single_router` en `iroh-syntrix-docs/tests/app_invite_test.rs`. El Router no despacha conexiones al 4to handler cuando ya tiene 3 registrados. No sabemos si es un bug o un límite intencional del accept loop.
 
 **Fix:** Router dedicado para el invite handler, separado del Router de docs/gossip/blobs.
 
