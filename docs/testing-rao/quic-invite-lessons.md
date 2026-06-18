@@ -6,9 +6,15 @@ Lo que aprendimos implementando notificaciones P2P vía `endpoint.connect()` + `
 
 ### 1. Un Router, 4+ handlers → los últimos son ignorados ⚠️ BUG CONFIRMADO
 
-**Síntoma:** `connect()` funciona pero el handler nunca recibe la conexión. Con timeout, `connect()` se cuelga (deadline elapsed).
+**Síntoma:** `connect()` se cuelga (deadline elapsed). El handler nunca recibe la conexión.
 
-**Causa:** Registrar 4+ protocol handlers en el mismo `Router::builder` hace que iroh ignore los últimos. Confirmado con test `test_invite_in_single_router` en `iroh-syntrix-docs/tests/app_invite_test.rs`. El Router no despacha conexiones al 4to handler cuando ya tiene 3 registrados. No sabemos si es un bug o un límite intencional del accept loop.
+**Causa:** Confirmado con test `test_invite_in_single_router`. Registrar 4+ ALPNs en el mismo `Router::builder` hace que el último handler nunca sea despachado. El `Router::spawn()` llama a `Endpoint::set_alpns(alpn_list)` que envía todos los ALPNs al TLS server config vía `noq_proto::ServerConfig::set_alpn_protocols()`. 
+
+El `ProtocolMap` es un `BTreeMap` sin límites (`iroh/src/protocol.rs:377`). El `Router::accept()` no tiene límites (`iroh/src/protocol.rs:484`). El `handle_connection()` verifica el ALPN y busca en el mapa sin restricciones (`iroh/src/protocol.rs:625-661`).
+
+La causa raíz probablemente está en la capa TLS/QUIC (`noq`), no en iroh. La negociación de ALPN en la handshake TLS puede tener un límite en el número de protocolos que el servidor anuncia. TLS 1.3 soporta múltiples ALPNs, pero implementaciones específicas podrían truncar la lista.
+
+**NOTA:** Cuando el invite handler está en un Router SEPARADO, el `set_alpns()` de ese Router **sobrescribe** el server config del endpoint (`iroh/src/endpoint.rs:930`). El endpoint solo anuncia los ALPNs del último Router que hizo spawn. Esto significa que si el invite Router hace spawn después que el docs Router, el endpoint SOLO anuncia `/syntrix/invite/1` y las conexiones de docs/gossip/blobs deberían fallar. Sin embargo, en la práctica las conexiones ya establecidas no se ven afectadas porque solo las nuevas handshakes TLS usan el nuevo server config.
 
 **Fix:** Router dedicado para el invite handler, separado del Router de docs/gossip/blobs.
 
