@@ -130,6 +130,45 @@ let _ = conn.closed().await;  // espera al client
 
 ## DNS discovery no siempre funciona
 
-`connect(peer, alpn)` — sin direcciones explícitas — depende de DNS TXT records (pkarr). En redes donde `dns.iroh.link` no resuelve o tiene latencia alta, falla con "No addressing information available".
+`connect(peer, alpn)` — sin direcciones explícitas — depende de DNS TXT records (pkarr) publicados en `dns.iroh.link`. Cuando el cliente llama `ep.online().await`, publica su `EndpointInfo` (relay URL + direct addresses) en el DHT de pkarr. El admin, al llamar `connect(peer, alpn)`, consulta `dns.iroh.link` por los TXT records del peer.
 
-**Solución:** Pasar `EndpointAddr::from_parts(peer, addrs)` con direcciones explícitas (localhost IPs + relay URLs).
+**Problema:** en nuestra red, esta resolución DNS tarda >10 segundos o directamente falla. Testeado con `test_dns_discovery` — `connect(peer, alpn)` timeoutea consistentemente. Para una UI interactiva (el admin hace clic en Send Invite y espera respuesta), >10s es inaceptable.
+
+**Solución:** compartir el `EndpointAddr` completo del cliente como JSON, para que el admin haga `connect(EndpointAddr::from_parts(peer, addrs), alpn)` sin depender de DNS.
+
+### El JSON de EndpointAddr
+
+```json
+{
+  "addrs": [
+    "relay:https://use1-1.relay.n0.iroh-canary.iroh.link./",
+    "ip:127.0.0.1:43525",
+    "ip:192.168.1.179:43525",
+    "ip:[2806:103e:16:c28c::4]:58328"
+  ],
+  "node_id": "56f322092380e71f78bbbd80ceca7036bc8b8aba515c8c30c663833d86f90788"
+}
+```
+
+| Campo | Significado | Uso |
+|-------|-------------|-----|
+| `node_id` | Hash Ed25519 (32 bytes hex) de la llave pública del dispositivo | Identidad del peer. El admin lo usa para construir `PublicKey`. |
+| `addrs` | Lista de `TransportAddr`: relay URLs + direcciones IP del dispositivo | El admin construye `EndpointAddr::from_parts(peer, addrs)` y llama `connect()`. |
+
+**`relay:URL`** — la URL del relay donde el cliente está conectado (n0 público, o nuestro relay en producción). Permite conexión vía relay si la directa falla.
+
+**`ip:HOST:PORT`** — direcciones IP directas (localhost, LAN, WAN, IPv6). El admin intenta conexión directa por estas IPs primero.
+
+### Flujo
+
+```
+1. Client: ep.addr() → serializa a JSON → muestra al usuario
+2. Usuario: copia el JSON → lo pega en el admin
+3. Admin: parsea JSON → extrae node_id + addrs
+4. Admin: endpoint.connect(EndpointAddr::from_parts(peer, addrs), ALPN)
+5. Iroh: intenta directo por IPs locales (127.0.0.1, 192.168.x.x)
+6. Si falla: intenta por relay (relay URL)
+7. Conexión establecida en <1s
+```
+
+**Para producción:** con relay + DNS propios, `connect(peer, alpn)` resolverá en <1s y no será necesario compartir el JSON. El admin solo necesitará el `node_id`.
